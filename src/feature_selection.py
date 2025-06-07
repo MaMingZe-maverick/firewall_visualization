@@ -43,11 +43,47 @@ def load_data_with_prefixes():
     return X_train[num_cols], y_train, X_val[num_cols], y_val
 
 def calculate_information_gain(X, y):
-    """计算特征的信息增益（使用sklearn的mutual_info_classif）"""
-    # 论文中提到使用信息增益算法（公式1-5）
-    # mutual_info_classif在分类问题中等同于信息增益
-    scores = mutual_info_classif(X, y, random_state=RANDOM_STATE)
-    return scores
+    """严格实现论文公式1-5的信息增益计算"""
+    # 1. 计算数据集的经验熵H(D)
+    def entropy(y):
+        # 处理numpy数组和pandas Series
+        if hasattr(y, 'value_counts'):  # pandas Series
+            p = y.value_counts(normalize=True)
+        else:  # numpy array
+            unique, counts = np.unique(y, return_counts=True)
+            p = counts / counts.sum()
+        return -np.sum(p * np.log2(p + 1e-10))  # 避免log(0)
+    
+    H_D = entropy(y)
+    
+    # 2. 计算特征A的条件经验熵H(D|A)
+    scores = []
+    
+    # 处理numpy数组和pandas DataFrame
+    if isinstance(X, pd.DataFrame):
+        features = X.columns
+        X_values = X.values
+    else:
+        features = range(X.shape[1])
+        X_values = X
+    
+    for i, feature in enumerate(features):
+        # 按特征值分组
+        feature_values = X_values[:, i]
+        unique_values = np.unique(feature_values)
+        H_D_A = 0
+        
+        for val in unique_values:
+            mask = feature_values == val
+            subset = y[mask] if isinstance(y, pd.Series) else y[mask]
+            weight = np.sum(mask) / len(y)
+            H_D_A += weight * entropy(subset)
+        
+        # 3. 计算信息增益g(D,A) = H(D) - H(D|A)
+        ig = H_D - H_D_A
+        scores.append(ig)
+    
+    return np.array(scores)
 
 def information_gain_wrapper(X, y):
     """可序列化的信息增益评分函数包装器"""
@@ -67,8 +103,10 @@ def create_feature_selector(X_train, y_train, k=TOP_K):
             stratify=y_train,
             random_state=RANDOM_STATE
         )
+        X_sampled = X_sampled.reset_index(drop=True)
+        y_sampled = y_sampled.reset_index(drop=True)
     else:
-        X_sampled, y_sampled = X_train, y_train
+        X_sampled, y_sampled = X_train.reset_index(drop=True), y_train.reset_index(drop=True)
     
     # 2. 处理缺失值
     if X_sampled.isna().any().any():

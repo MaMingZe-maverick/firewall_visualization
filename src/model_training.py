@@ -34,6 +34,10 @@ def load_selected_data():
     X_val = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'val_X_selected.csv'))
     y_val = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'val_y_selected.csv')).squeeze()
     
+    # 确保标签是字符串类型（多分类需要）
+    y_train = y_train.astype(str)
+    y_val = y_val.astype(str)
+    
     # 检查缺失值
     train_missing = X_train.isna().sum().sum()
     val_missing = X_val.isna().sum().sum()
@@ -42,7 +46,7 @@ def load_selected_data():
     return X_train, y_train, X_val, y_val
 
 def train_random_forest_model():
-    """训练随机森林模型（严格遵循论文参数设置）"""
+    """训练随机森林模型（多分类）"""
     try:
         # 1. 加载数据
         X_train, y_train, X_val, y_val = load_selected_data()
@@ -56,7 +60,8 @@ def train_random_forest_model():
                 min_samples_split=5,    # 节点分裂最小样本数
                 class_weight='balanced', # 处理类别不均衡
                 random_state=42,
-                n_jobs=-1               # 使用所有CPU核心
+                n_jobs=-1,              # 使用所有CPU核心
+                oob_score=True          # 计算袋外分数
             )
         )
         
@@ -66,47 +71,67 @@ def train_random_forest_model():
         # 3. 验证集评估
         print("\n=== 模型评估结果 ===")
         y_pred = model.predict(X_val)
+        
+        # 获取所有类别（按字母顺序排序）
+        classes = sorted(set(y_val) | set(y_pred))
+        
+        # 多分类评估报告
+        print("分类报告:")
+        print(classification_report(y_val, y_pred, target_names=classes))
+        
+        # 计算整体准确率
         accuracy = accuracy_score(y_val, y_pred)
-        print(f"验证集准确率: {accuracy:.4f}")
-        print(classification_report(y_val, y_pred, target_names=['正常', '攻击']))
+        print(f"整体准确率: {accuracy:.4f}")
+        
+        # 计算袋外分数（OOB Score）
+        rf_model = model.named_steps['randomforestclassifier']
+        print(f"袋外分数 (OOB Score): {rf_model.oob_score_:.4f}")
         
         # 4. 保存模型管道
         joblib.dump(model, os.path.join(MODELS_DIR, 'random_forest_pipeline.pkl'))
         print("模型已保存到models/random_forest_pipeline.pkl")
         
         # 5. 可视化特征重要性
-        rf_model = model.named_steps['randomforestclassifier']
         plot_feature_importance(rf_model, X_train.columns)
         
         # 6. 可视化混淆矩阵
-        plot_confusion_matrix(y_val, y_pred)
+        plot_confusion_matrix(y_val, y_pred, classes)
         
     except Exception as e:
         print(f"\n[错误] 训练失败: {str(e)}")
         raise  # 重新抛出异常以便调试
 
 def plot_feature_importance(model, feature_names):
-    """可视化特征重要性"""
+    """可视化特征重要性（多分类）"""
     importance = model.feature_importances_
     indices = np.argsort(importance)[::-1]
     
     plt.figure(figsize=(12, 8))
-    plt.title("Top 20 特征重要性排名")
+    plt.title("Top 20 Feature importance ranking")
     sns.barplot(x=importance[indices][:20], y=feature_names[indices][:20])
     plt.tight_layout()
     plt.savefig(os.path.join(RESULTS_DIR, 'feature_importance_plot.png'))
     print("特征重要性图已保存到results/feature_importance_plot.png")
 
-def plot_confusion_matrix(y_true, y_pred):
-    """可视化混淆矩阵"""
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['正常', '攻击'], 
-                yticklabels=['正常', '攻击'])
-    plt.xlabel('预测标签')
-    plt.ylabel('真实标签')
-    plt.title('混淆矩阵')
+def plot_confusion_matrix(y_true, y_pred, classes):
+    """可视化混淆矩阵（多分类）"""
+    cm = confusion_matrix(y_true, y_pred, labels=classes)
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        cm, 
+        annot=True, 
+        fmt='d', 
+        cmap='Blues',
+        xticklabels=classes,
+        yticklabels=classes
+    )
+    plt.xlabel('Prediction label')
+    plt.ylabel('Real label')
+    plt.title('confusion matrix')
+    plt.xticks(rotation=45)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
     plt.savefig(os.path.join(RESULTS_DIR, 'confusion_matrix.png'))
     print("混淆矩阵已保存到results/confusion_matrix.png")
 

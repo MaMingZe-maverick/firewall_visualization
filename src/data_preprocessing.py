@@ -102,18 +102,42 @@ def preprocess_data(data):
     return processed_data, zscaler, encoder
 
 def process_labels(data):
-    """处理标签：将攻击类型映射为0（正常）和1（攻击）"""
-    # 论文中提到将攻击分为DoS、R2L、U2R、Probe等类型
-    # 简化处理：正常样本为0，所有攻击样本为1
-    normal_label = 'normal.'
-    attack_types = {
-        normal_label: 0,
-        **{k: 1 for k in data['label'].unique() if k != normal_label}
+    """处理标签：将攻击类型映射为多分类标签"""
+    # 按照论文中的分类：正常、DoS、Probe、R2L、U2R
+    attack_mapping = {
+        'normal.': 'normal',
+        # DoS攻击
+        'back.': 'DoS', 'land.': 'DoS', 'neptune.': 'DoS', 'pod.': 'DoS', 
+        'smurf.': 'DoS', 'teardrop.': 'DoS', 'apache2.': 'DoS', 'udpstorm.': 'DoS',
+        'processtable.': 'DoS', 'worm.': 'DoS',
+        # Probe攻击
+        'satan.': 'Probe', 'ipsweep.': 'Probe', 'nmap.': 'Probe', 'portsweep.': 'Probe',
+        'mscan.': 'Probe', 'saint.': 'Probe',
+        # R2L攻击
+        'ftp_write.': 'R2L', 'guess_passwd.': 'R2L', 'imap.': 'R2L', 'multihop.': 'R2L',
+        'phf.': 'R2L', 'spy.': 'R2L', 'warezclient.': 'R2L', 'warezmaster.': 'R2L',
+        'xlock.': 'R2L', 'xsnoop.': 'R2L', 'snmpguess.': 'R2L', 'snmpgetattack.': 'R2L',
+        'httptunnel.': 'R2L', 'sendmail.': 'R2L', 'named.': 'R2L',
+        # U2R攻击
+        'buffer_overflow.': 'U2R', 'loadmodule.': 'U2R', 'rootkit.': 'U2R', 'perl.': 'U2R',
+        'sqlattack.': 'U2R', 'xterm.': 'U2R', 'ps.': 'U2R'
     }
     
-    y = data['label'].map(attack_types).fillna(1)
-    print(f"标签分布 - 正常样本: {sum(y==0):,}, 攻击样本: {sum(y==1):,}")
-    return y, attack_types
+    # 处理未知攻击类型
+    y = data['label'].map(attack_mapping)
+    unknown_attacks = y.isna()
+    if unknown_attacks.any():
+        print(f"警告: 发现 {unknown_attacks.sum()} 条未知攻击类型的样本")
+        # 将未知攻击类型归类为"其他"
+        y.fillna('other', inplace=True)
+    
+    # 打印类别分布
+    class_counts = y.value_counts()
+    print("标签分布:")
+    for cls, count in class_counts.items():
+        print(f"- {cls}: {count:,}")
+    
+    return y, attack_mapping
 
 if __name__ == "__main__":
     # 1. 加载数据
