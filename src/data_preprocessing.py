@@ -78,15 +78,40 @@ def load_and_filter_data(data_path, chunksize=100000):
     print(f"原始数据行数: {total_rows:,} -> 过滤后行数: {filtered_rows:,}")
     return data
 
+def add_dos_probe_features(data):
+    """添加针对DoS和Probe攻击的专用特征"""
+    print("添加DoS/Probe专用特征...")
+    
+    # 高流量特征 - 针对DoS攻击
+    data['high_traffic'] = ((data['src_bytes'] > 1e6) | (data['dst_bytes'] > 1e6)).astype(int)
+    
+    # 端口扫描特征 - 针对Probe攻击
+    data['port_scan'] = ((data['srv_count'] > 50) & 
+                         (data['same_srv_rate'] < 0.1)).astype(int)
+    
+    # 短连接特征 - 针对DoS攻击
+    data['short_connection'] = ((data['duration'] < 1) & 
+                                (data['dst_bytes'] > 1000)).astype(int)
+    
+    # 服务多样性特征 - 针对Probe攻击
+    data['service_diversity'] = data['service'].apply(lambda x: 1 if x in ['http', 'ftp', 'smtp'] else 0)
+    
+    new_features = ['high_traffic', 'port_scan', 'short_connection', 'service_diversity']
+    return new_features
+
 def preprocess_data(data):
-    """数据预处理：特征编码、标准化、归一化"""
+    """数据预处理：特征编码、标准化、归一化（添加DoS/Probe专用特征）"""
     print("开始数据预处理...")
     
     # 分离分类特征和数值特征
     categorical_cols = ['protocol_type', 'service', 'flag']
     numerical_cols = [col for col in data.columns if col not in categorical_cols + ['label']]
     
-    # 1. 分类特征独热编码
+    # 1. 添加针对DoS和Probe的新特征
+    new_features = add_dos_probe_features(data)
+    numerical_cols += new_features
+    
+    # 2. 分类特征独热编码
     encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
     encoded_features = encoder.fit_transform(data[categorical_cols])
     encoded_df = pd.DataFrame(
@@ -94,7 +119,7 @@ def preprocess_data(data):
         columns=encoder.get_feature_names_out(categorical_cols)
     )
     
-    # 2. 数值特征标准化（Z-Score）
+    # 3. 数值特征标准化（Z-Score）
     zscaler = StandardScaler()
     zscaled_data = zscaler.fit_transform(data[numerical_cols])
     zscaled_df = pd.DataFrame(
@@ -102,7 +127,7 @@ def preprocess_data(data):
         columns=[f'z_{col}' for col in numerical_cols]
     )
     
-    # 3. 数值特征归一化（Min-Max）
+    # 4. 数值特征归一化（Min-Max）
     def minmax_scale(series):
         arr = series.values
         min_val, max_val = np.min(arr), np.max(arr)
@@ -113,7 +138,7 @@ def preprocess_data(data):
     minmax_data = data[numerical_cols].apply(minmax_scale)
     minmax_df = minmax_data.add_prefix('mm_')
     
-    # 合并所有特征
+    # 5. 合并所有特征
     processed_data = pd.concat([
         zscaled_df, 
         minmax_df, 
@@ -122,6 +147,17 @@ def preprocess_data(data):
     ], axis=1)
     
     print(f"预处理后特征数: {processed_data.shape[1]}")
+    print(f"新增DoS/Probe专用特征: {new_features}")
+    
+    # 6. 保存新特征信息
+    with open(os.path.join(PROCESSED_DATA_DIR, 'new_features.json'), 'w') as f:
+        json.dump({
+            'high_traffic': "High traffic volume (src_bytes or dst_bytes > 1e6)",
+            'port_scan': "Port scanning behavior (srv_count > 50 and same_srv_rate < 0.1)",
+            'short_connection': "Short connections with high data transfer (duration < 1s and dst_bytes > 1000)",
+            'service_diversity': "Connection to common probe services (http, ftp, smtp)"
+        }, f)
+    
     return processed_data, zscaler, encoder
 
 def process_labels(data):
@@ -195,12 +231,23 @@ def main():
     categorical_cols = ['protocol_type', 'service', 'flag']
     numerical_cols = [col for col in test_data.columns if col not in categorical_cols + ['label']]
     
+    # 添加DoS/Probe专用特征到测试数据
+    print("\n为测试数据添加DoS/Probe专用特征...")
+    new_features = add_dos_probe_features(test_data)
+    numerical_cols += new_features
+    
     # 使用已拟合的编码器和缩放器转换测试数据
     encoded_test = encoder.transform(test_data[categorical_cols])
     encoded_test_df = pd.DataFrame(
         encoded_test,
         columns=encoder.get_feature_names_out(categorical_cols)
     )
+    
+    # 确保测试数据包含所有在训练时使用的特征
+    for feature in numerical_cols:
+        if feature not in test_data.columns:
+            print(f"警告: 测试数据中缺少特征 '{feature}'，添加默认值0")
+            test_data[feature] = 0
     
     zscaled_test = zscaler.transform(test_data[numerical_cols])
     zscaled_test_df = pd.DataFrame(

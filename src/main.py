@@ -19,10 +19,10 @@ def run_pipeline():
         
         # 1. 数据预处理
         print_section("第1步：数据预处理")
-        import data_preprocessing
+        from data_preprocessing import main as preprocess_data
         if not os.path.exists(os.path.join('data', 'processed', 'X_train.csv')):
             print("开始数据预处理...")
-            data_preprocessing.main()
+            preprocess_data()
         else:
             print("检测到已处理的数据文件，跳过预处理步骤")
             print("如需重新预处理，请删除 data/processed 目录下的文件")

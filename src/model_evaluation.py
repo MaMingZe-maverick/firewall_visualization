@@ -6,6 +6,8 @@ import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import os
 import time
+import json
+from datetime import datetime
 from tqdm import tqdm
 
 # 获取脚本所在目录的绝对路径
@@ -60,7 +62,7 @@ def load_test_data(chunksize=100000):
     return X_test, y_test
 
 def evaluate_model_on_test_data(batch_size=10000):
-    """在完整测试集上评估模型性能"""
+    """在完整测试集上评估模型性能（添加阈值调整）"""
     try:
         start_time = time.time()
         
@@ -71,18 +73,45 @@ def evaluate_model_on_test_data(batch_size=10000):
         # 2. 加载测试数据
         X_test, y_test = load_test_data()
         
-        # 3. 分批预测以处理大型数据集
+        # 3. 设置DoS和Probe的阈值
+        dos_threshold = 0.3  # 降低DoS的判定阈值
+        probe_threshold = 0.3  # 降低Probe的判定阈值
+        
+        # 获取所有类别
+        classes = model.classes_
+        print(f"模型类别: {classes}")
+        
+        # 4. 分批预测以处理大型数据集
         print("开始预测...")
         predictions = []
         
         for i in tqdm(range(0, len(X_test), batch_size), desc="Predicting"):
             batch_X = X_test.iloc[i:i+batch_size]
-            batch_pred = model.predict(batch_X)
+            
+            # 使用概率预测代替直接分类
+            batch_proba = model.predict_proba(batch_X)
+            
+            # 应用自定义阈值
+            batch_pred = []
+            for probs in batch_proba:
+                # 获取DoS和Probe的索引
+                dos_idx = np.where(classes == 'DoS')[0][0]
+                probe_idx = np.where(classes == 'Probe')[0][0]
+                
+                # 应用自定义阈值
+                if probs[dos_idx] >= dos_threshold:
+                    batch_pred.append('DoS')
+                elif probs[probe_idx] >= probe_threshold:
+                    batch_pred.append('Probe')
+                else:
+                    # 对于其他类别，选择概率最高的
+                    batch_pred.append(classes[np.argmax(probs)])
+            
             predictions.extend(batch_pred)
         
         y_pred = np.array(predictions)
         
-        # 4. 评估性能
+        # 5. 评估性能
         print("\n=== 模型在完整测试集上的评估结果 ===")
         
         # 获取所有类别（按字母顺序排序）
@@ -103,16 +132,26 @@ def evaluate_model_on_test_data(batch_size=10000):
             f.write(f"整体准确率: {accuracy:.4f}\n\n")
             f.write(class_report)
         
-        # 5. 可视化混淆矩阵
+        # 6. 可视化混淆矩阵
         print("\n生成混淆矩阵...")
         plot_confusion_matrix(y_test, y_pred, classes)
         
-        # 6. 计算每类攻击的检测率和误报率
+        # 7. 计算每类攻击的检测率和误报率
         print("\n计算每类攻击的检测率和误报率...")
         calculate_detection_rates(y_test, y_pred, classes)
         
         elapsed_time = time.time() - start_time
         print(f"\n评估完成！总耗时: {elapsed_time:.2f} 秒")
+        
+        # 8. 保存阈值信息
+        threshold_info = {
+            'dos_threshold': dos_threshold,
+            'probe_threshold': probe_threshold,
+            'evaluation_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'elapsed_time': elapsed_time
+        }
+        with open(os.path.join(RESULTS_DIR, 'threshold_info.json'), 'w') as f:
+            json.dump(threshold_info, f)
         
     except Exception as e:
         print(f"\n[错误] 评估失败: {str(e)}")

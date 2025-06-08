@@ -50,6 +50,22 @@ def load_data_with_prefixes():
     return X_train[num_cols], y_train, X_val[num_cols], y_val
 
 def calculate_information_gain(X, y, batch_size=10000):
+        # 增加类别权重计算（惩罚多数类）
+    class_weights = {}
+    class_counts = y.value_counts()
+    total = len(y)
+    for cls in class_counts.index:
+        class_weights[cls] = total / (len(class_counts) * class_counts[cls])
+    
+    # 修改熵计算加入权重
+    def weighted_entropy(y):
+        p = y.value_counts(normalize=True)
+        weighted_p = np.array([p[cls] * class_weights.get(cls, 1) for cls in p.index])
+        weighted_p /= weighted_p.sum()  # 重新归一化
+        return -np.sum(weighted_p * np.log2(weighted_p + 1e-10))
+    
+    H_D = weighted_entropy(y)
+    
     """严格实现论文公式1-5的信息增益计算，使用批处理以优化内存使用"""
     # 1. 计算数据集的经验熵H(D)
     def entropy(y):
@@ -123,7 +139,7 @@ def information_gain_wrapper(X, y):
     return calculate_information_gain(X, y)
 
 def create_feature_selector(X_train, y_train, k=TOP_K):
-    """创建基于信息增益的特征选择器"""
+    """创建基于信息增益的特征选择器（增强DoS和Probe特征选择）"""
     print(f"开始特征选择（选择前{k}个特征）...")
     
     # 1. 数据采样（加速计算）
@@ -147,23 +163,52 @@ def create_feature_selector(X_train, y_train, k=TOP_K):
         imputer = SimpleImputer(strategy='median')
         X_sampled = pd.DataFrame(imputer.fit_transform(X_sampled), columns=X_sampled.columns)
     
-    # 3. 计算信息增益分数
-    print("计算特征信息增益...")
+    # 3. 计算总体信息增益分数
+    print("计算总体特征信息增益...")
     mi_scores = calculate_information_gain(X_sampled, y_sampled)
     
-    # 4. 选择Top-K特征
-    top_indices = np.argsort(mi_scores)[-k:][::-1]
+    # 4. 专门计算DoS和Probe类的特征重要性
+    print("计算DoS和Probe类别的特征重要性...")
+    
+    # 创建DoS二元标签
+    dos_mask = (y_sampled == 'DoS').astype(int)
+    dos_scores = calculate_information_gain(X_sampled, dos_mask)
+    
+    # 创建Probe二元标签
+    probe_mask = (y_sampled == 'Probe').astype(int)
+    probe_scores = calculate_information_gain(X_sampled, probe_mask)
+    
+    # 5. 合并特征重要性（给予DoS和Probe更高权重）
+    # 使用几何平均来平衡不同类别的重要性
+    combined_scores = np.sqrt(mi_scores * (dos_scores + 1e-3) * (probe_scores + 1e-3))
+    
+    # 6. 选择Top-K特征
+    top_indices = np.argsort(combined_scores)[-k:][::-1]
     selected_features = X_train.columns[top_indices]
     print(f"Top-{k}特征: {selected_features}")
     
-    # 5. 构建特征选择管道（使用可序列化的函数）
+    # 7. 构建特征选择管道（使用可序列化的函数）
     selector = Pipeline([
         ('imputer', SimpleImputer(strategy='median')),
         ('selector', SelectKBest(score_func=information_gain_wrapper, k=k))
     ])
     selector.fit(X_train, y_train)
     
-    return selector, selected_features, mi_scores
+    # 8. 保存特征重要性数据
+    feature_importance = pd.DataFrame({
+        'feature': X_train.columns,
+        'information_gain': mi_scores,
+        'dos_importance': dos_scores,
+        'probe_importance': probe_scores,
+        'combined_score': combined_scores
+    }).sort_values('combined_score', ascending=False)
+    
+    feature_importance.to_csv(
+        os.path.join(RESULTS_DIR, 'feature_importance_with_dos_probe.csv'),
+        index=False
+    )
+    
+    return selector, selected_features, combined_scores
 
 def save_selected_data(X, y, selected_features, output_prefix):
     """保存选定特征的数据"""

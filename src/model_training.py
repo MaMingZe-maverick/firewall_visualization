@@ -8,6 +8,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import make_pipeline
 import seaborn as sns
 import os
+from sklearn.utils.class_weight import compute_class_weight
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -105,24 +106,52 @@ def train_random_forest_model():
         # 1. 加载数据
         X_train, y_train, X_val, y_val = load_data()
         
-        # 2. 构建模型管道（包含缺失值处理和随机森林）
+        # 2. 计算类别权重 - 重点优化DoS和Probe的识别
+        print("\n计算类别权重以优化DoS和Probe识别...")
+        
+        # 获取所有类别
+        classes = np.unique(y_train)
+        
+        # 计算类别的原始频率
+        class_counts = y_train.value_counts()
+        print("类别分布:")
+        for cls, count in class_counts.items():
+            print(f"- {cls}: {count:,}")
+        
+        # 自定义权重 - 重点提升DoS和Probe的权重
+        custom_weights = {
+            'DoS': 25.0,   # 显著提高DoS权重
+            'Probe': 20.0, # 显著提高Probe权重
+            'R2L': 3.0,
+            'U2R': 5.0,
+            'normal': 1.0
+        }
+        
+        # 创建样本权重向量
+        sample_weights = y_train.map(custom_weights).values
+        
+        # 3. 构建模型管道（包含缺失值处理和随机森林）
         model = make_pipeline(
             SimpleImputer(strategy='median'),  # 中位数填充缺失值
             RandomForestClassifier(
-                n_estimators=200,       # 论文未明确参数，但实验结果优异，设置为200棵树
-                max_depth=15,           # 限制树深度，避免过拟合
-                min_samples_split=5,    # 节点分裂最小样本数
-                class_weight='balanced', # 处理类别不均衡
+                n_estimators=500,       # 增加树的数量
+                max_depth=None,          # 不限制深度
+                min_samples_split=10,    # 增加分裂限制防止过拟合
+                min_samples_leaf=5,     # 添加叶节点最小样本限制
+                max_features='sqrt',    # 限制每棵树使用的特征数
+                class_weight='balanced', 
                 random_state=42,
-                n_jobs=-1,              # 使用所有CPU核心
-                oob_score=True          # 计算袋外分数
+                n_jobs=-1,
+                oob_score=True
             )
         )
         
         print("开始训练随机森林模型...")
-        model.fit(X_train, y_train)
         
-        # 3. 验证集评估
+        # 4. 使用样本权重训练模型
+        model.fit(X_train, y_train, randomforestclassifier__sample_weight=sample_weights)
+        
+        # 5. 验证集评估
         print("\n=== 模型评估结果 ===")
         y_pred = model.predict(X_val)
         
@@ -141,15 +170,23 @@ def train_random_forest_model():
         rf_model = model.named_steps['randomforestclassifier']
         print(f"袋外分数 (OOB Score): {rf_model.oob_score_:.4f}")
         
-        # 4. 保存模型管道
+        # 6. 保存模型管道
         joblib.dump(model, os.path.join(MODELS_DIR, 'random_forest_pipeline.pkl'))
         print("模型已保存到models/random_forest_pipeline.pkl")
         
-        # 5. 可视化特征重要性
+        # 7. 可视化特征重要性
         plot_feature_importance(rf_model, X_train.columns)
         
-        # 6. 可视化混淆矩阵
+        # 8. 可视化混淆矩阵
         plot_confusion_matrix(y_val, y_pred, classes)
+        
+        # 9. 保存类别权重信息
+        weight_info = pd.DataFrame({
+            'class': list(custom_weights.keys()),
+            'weight': list(custom_weights.values())
+        })
+        weight_info.to_csv(os.path.join(RESULTS_DIR, 'class_weights.csv'), index=False)
+        print("类别权重信息已保存到results/class_weights.csv")
         
     except Exception as e:
         print(f"\n[错误] 训练失败: {str(e)}")
@@ -188,9 +225,6 @@ def plot_confusion_matrix(y_true, y_pred, classes):
     plt.tight_layout()
     plt.savefig(os.path.join(RESULTS_DIR, 'confusion_matrix.png'))
     print("混淆矩阵已保存到results/confusion_matrix.png")
-
-
-
 
 if __name__ == "__main__":
     train_random_forest_model()
