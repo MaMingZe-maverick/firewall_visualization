@@ -24,8 +24,12 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, 'results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 def load_test_data(chunksize=100000):
-    """分块加载测试数据以处理大型数据集"""
+    """分块加载测试数据以处理大型数据集，并确保特征顺序与训练时一致"""
     print("加载测试数据...")
+    
+    # 首先加载训练数据的第一行以获取正确的特征顺序
+    train_features = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'X_train.csv'), nrows=1)
+    feature_order = train_features.columns.tolist()
     
     # 获取总行数
     total_rows = sum(1 for _ in open(os.path.join(PROCESSED_DATA_DIR, 'X_test.csv'))) - 1
@@ -35,10 +39,12 @@ def load_test_data(chunksize=100000):
     y_chunks = []
     
     # 使用tqdm显示进度
-    for i, (chunk_X, chunk_y) in enumerate(tqdm(zip(
+    for chunk_X, chunk_y in tqdm(zip(
         pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'X_test.csv'), chunksize=chunksize),
         pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'y_test.csv'), chunksize=chunksize)
-    ), total=total_chunks, desc="Loading test data")):
+    ), total=total_chunks, desc="Loading test data"):
+        # 确保特征顺序与训练数据一致
+        chunk_X = chunk_X[feature_order]
         X_chunks.append(chunk_X)
         y_chunks.append(chunk_y.squeeze())
         
@@ -59,6 +65,7 @@ def load_test_data(chunksize=100000):
     y_test = y_test.astype(str)
     
     print(f"测试数据加载完成，共 {len(X_test):,} 条记录")
+    print(f"特征数量: {len(feature_order)}")
     return X_test, y_test
 
 def evaluate_model_on_test_data(batch_size=10000):

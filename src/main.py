@@ -20,12 +20,15 @@ def run_pipeline():
         # 1. 数据预处理
         print_section("第1步：数据预处理")
         from data_preprocessing import main as preprocess_data
-        if not os.path.exists(os.path.join('data', 'processed', 'X_train.csv')):
+        processed_data_path = os.path.join('data', 'processed', 'X_train.csv')
+        
+        if not os.path.exists(processed_data_path):
             print("开始数据预处理...")
             preprocess_data()
         else:
             print("检测到已处理的数据文件，跳过预处理步骤")
-            print("如需重新预处理，请删除 data/processed 目录下的文件")
+            print("如需重新预处理，请删除:")
+            print(f"- {processed_data_path}")
         
         # 2. 模型训练
         print_section("第2步：模型训练")

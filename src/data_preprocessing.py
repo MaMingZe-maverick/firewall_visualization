@@ -99,7 +99,7 @@ def add_dos_probe_features(data):
     new_features = ['high_traffic', 'port_scan', 'short_connection', 'service_diversity']
     return new_features
 
-def preprocess_data(data):
+def preprocess_data(data, is_training=True):
     """数据预处理：特征编码、标准化、归一化（添加DoS/Probe专用特征）"""
     print("开始数据预处理...")
     
@@ -107,9 +107,16 @@ def preprocess_data(data):
     categorical_cols = ['protocol_type', 'service', 'flag']
     numerical_cols = [col for col in data.columns if col not in categorical_cols + ['label']]
     
+    # 记录原始特征
+    original_numerical_cols = numerical_cols.copy()
+    
     # 1. 添加针对DoS和Probe的新特征
+    print("添加DoS/Probe专用特征...")
     new_features = add_dos_probe_features(data)
     numerical_cols += new_features
+    
+    print(f"\n数值特征数量: {len(numerical_cols)}")
+    print(f"数值特征列表: {numerical_cols[:5]}...")  # 打印前5个
     
     # 2. 分类特征独热编码
     encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
@@ -227,14 +234,27 @@ def main():
     test_data = load_and_filter_data(os.path.join(RAW_DATA_DIR, 'kddcup.data.gz'))
     
     # 6. 使用已拟合的预处理器处理测试数据
+    print("\n处理测试数据...")
+    
     # 分离分类特征和数值特征
     categorical_cols = ['protocol_type', 'service', 'flag']
     numerical_cols = [col for col in test_data.columns if col not in categorical_cols + ['label']]
     
     # 添加DoS/Probe专用特征到测试数据
-    print("\n为测试数据添加DoS/Probe专用特征...")
+    print("为测试数据添加DoS/Probe专用特征...")
     new_features = add_dos_probe_features(test_data)
-    numerical_cols += new_features
+    
+    # 获取训练时使用的所有特征（从StandardScaler中获取）
+    print("确保测试数据包含所有训练集特征...")
+    scaler_feature_names = zscaler.feature_names_in_
+    
+    # 为缺失的特征添加默认值0
+    missing_features = [col for col in scaler_feature_names if col not in test_data.columns]
+    if missing_features:
+        print("为测试数据添加缺失的特征（使用默认值0）:")
+        for feature in missing_features:
+            print(f"- {feature}")
+            test_data[feature] = 0
     
     # 使用已拟合的编码器和缩放器转换测试数据
     encoded_test = encoder.transform(test_data[categorical_cols])
@@ -243,21 +263,43 @@ def main():
         columns=encoder.get_feature_names_out(categorical_cols)
     )
     
-    # 确保测试数据包含所有在训练时使用的特征
-    for feature in numerical_cols:
+    # 确保数值特征的顺序与训练时一致
+    # 获取zscaler中保存的特征名称，确保顺序一致
+    scaler_feature_names = zscaler.feature_names_in_
+    
+    # 确保测试数据包含所有这些特征
+    for feature in scaler_feature_names:
         if feature not in test_data.columns:
-            print(f"警告: 测试数据中缺少特征 '{feature}'，添加默认值0")
+            print(f"为测试数据添加特征 '{feature}'，使用默认值0")
             test_data[feature] = 0
     
-    zscaled_test = zscaler.transform(test_data[numerical_cols])
+    # 使用与训练时完全相同的特征顺序
+    zscaled_test = zscaler.transform(test_data[scaler_feature_names])
     zscaled_test_df = pd.DataFrame(
         zscaled_test,
-        columns=[f'z_{col}' for col in numerical_cols]
+        columns=[f'z_{col}' for col in scaler_feature_names],
+        index=test_data.index
     )
     
-    # 对测试集进行Min-Max缩放
-    minmax_test = test_data[numerical_cols].apply(lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0)
+    # 对测试集进行Min-Max缩放，使用与训练集相同的方法
+    def minmax_scale(series):
+        arr = series.values
+        min_val, max_val = np.min(arr), np.max(arr)
+        if max_val == min_val:
+            return np.zeros_like(arr)
+        return (arr - min_val) / (max_val - min_val)
+    
+    # 确保特征顺序与训练数据一致
+    minmax_features = sorted(list(set(list(scaler_feature_names) + new_features)))
+    minmax_test = test_data[minmax_features].apply(minmax_scale)
     minmax_test_df = minmax_test.add_prefix('mm_')
+    
+    # 删除可能存在的重复列
+    duplicate_cols = [col for col in minmax_test_df.columns if '.1' in col]
+    minmax_test_df = minmax_test_df.drop(columns=duplicate_cols)
+    
+    # 确保列的顺序与训练数据一致
+    minmax_test_df = minmax_test_df[sorted(minmax_test_df.columns)]
     
     # 合并测试集特征
     processed_test_data = pd.concat([
