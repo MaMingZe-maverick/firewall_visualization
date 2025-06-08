@@ -26,13 +26,67 @@ os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-def load_selected_data():
-    """加载选定特征的数据并处理缺失值"""
-    print("加载选定特征的数据...")
-    X_train = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'train_X_selected.csv'))
-    y_train = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'train_y_selected.csv')).squeeze()
-    X_val = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'val_X_selected.csv'))
-    y_val = pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'val_y_selected.csv')).squeeze()
+def load_data(chunksize=100000):
+    """加载预处理后的数据，使用分块加载以优化内存使用"""
+    print("加载预处理后的数据...")
+    
+    # 尝试导入tqdm
+    try:
+        from tqdm import tqdm
+        progress = tqdm
+    except ImportError:
+        progress = lambda x: x
+    
+    # 分块加载训练数据
+    print("加载训练数据...")
+    train_chunks_X = []
+    train_chunks_y = []
+    
+    # 获取总行数
+    total_rows = sum(1 for _ in open(os.path.join(PROCESSED_DATA_DIR, 'X_train.csv'))) - 1
+    total_chunks = (total_rows + chunksize - 1) // chunksize
+    
+    for chunk_X, chunk_y in progress(zip(
+        pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'X_train.csv'), chunksize=chunksize),
+        pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'y_train.csv'), chunksize=chunksize)
+    ), total=total_chunks, desc="Loading training data"):
+        train_chunks_X.append(chunk_X)
+        train_chunks_y.append(chunk_y.squeeze())
+        
+        # 定期清理内存
+        if len(train_chunks_X) >= 5:
+            train_chunks_X = [pd.concat(train_chunks_X, ignore_index=True)]
+            train_chunks_y = [pd.concat(train_chunks_y, ignore_index=True)]
+    
+    X_train = pd.concat(train_chunks_X, ignore_index=True)
+    y_train = pd.concat(train_chunks_y, ignore_index=True)
+    
+    # 清理内存
+    del train_chunks_X, train_chunks_y
+    import gc
+    gc.collect()
+    
+    # 分块加载验证数据
+    print("加载验证数据...")
+    val_chunks_X = []
+    val_chunks_y = []
+    
+    total_rows = sum(1 for _ in open(os.path.join(PROCESSED_DATA_DIR, 'X_val.csv'))) - 1
+    total_chunks = (total_rows + chunksize - 1) // chunksize
+    
+    for chunk_X, chunk_y in progress(zip(
+        pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'X_val.csv'), chunksize=chunksize),
+        pd.read_csv(os.path.join(PROCESSED_DATA_DIR, 'y_val.csv'), chunksize=chunksize)
+    ), total=total_chunks, desc="Loading validation data"):
+        val_chunks_X.append(chunk_X)
+        val_chunks_y.append(chunk_y.squeeze())
+    
+    X_val = pd.concat(val_chunks_X, ignore_index=True)
+    y_val = pd.concat(val_chunks_y, ignore_index=True)
+    
+    # 清理内存
+    del val_chunks_X, val_chunks_y
+    gc.collect()
     
     # 确保标签是字符串类型（多分类需要）
     y_train = y_train.astype(str)
@@ -49,7 +103,7 @@ def train_random_forest_model():
     """训练随机森林模型（多分类）"""
     try:
         # 1. 加载数据
-        X_train, y_train, X_val, y_val = load_selected_data()
+        X_train, y_train, X_val, y_val = load_data()
         
         # 2. 构建模型管道（包含缺失值处理和随机森林）
         model = make_pipeline(
@@ -134,6 +188,9 @@ def plot_confusion_matrix(y_true, y_pred, classes):
     plt.tight_layout()
     plt.savefig(os.path.join(RESULTS_DIR, 'confusion_matrix.png'))
     print("混淆矩阵已保存到results/confusion_matrix.png")
+
+
+
 
 if __name__ == "__main__":
     train_random_forest_model()

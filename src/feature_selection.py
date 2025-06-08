@@ -27,7 +27,14 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # 配置参数（严格遵循论文实验设置）
 TOP_K = 25  # 选择前25个特征
 RANDOM_STATE = 42
-SAMPLE_SIZE = 50000  # 采样大小，加速计算
+SAMPLE_SIZE = 100000  # 增加采样大小以更好地代表完整数据集
+
+# 尝试导入tqdm用于进度显示
+try:
+    from tqdm import tqdm
+    progress = tqdm
+except ImportError:
+    progress = lambda x: x
 
 def load_data_with_prefixes():
     """加载带有z_和mm_前缀的数值特征数据"""
@@ -42,17 +49,16 @@ def load_data_with_prefixes():
     print(f"加载的数值特征数: {len(num_cols)}")
     return X_train[num_cols], y_train, X_val[num_cols], y_val
 
-def calculate_information_gain(X, y):
-    """严格实现论文公式1-5的信息增益计算"""
+def calculate_information_gain(X, y, batch_size=10000):
+    """严格实现论文公式1-5的信息增益计算，使用批处理以优化内存使用"""
     # 1. 计算数据集的经验熵H(D)
     def entropy(y):
-        # 处理numpy数组和pandas Series
         if hasattr(y, 'value_counts'):  # pandas Series
             p = y.value_counts(normalize=True)
         else:  # numpy array
             unique, counts = np.unique(y, return_counts=True)
             p = counts / counts.sum()
-        return -np.sum(p * np.log2(p + 1e-10))  # 避免log(0)
+        return -np.sum(p * np.log2(p + 1e-10))
     
     H_D = entropy(y)
     
@@ -67,21 +73,48 @@ def calculate_information_gain(X, y):
         features = range(X.shape[1])
         X_values = X
     
-    for i, feature in enumerate(features):
-        # 按特征值分组
-        feature_values = X_values[:, i]
-        unique_values = np.unique(feature_values)
+    print("计算每个特征的信息增益...")
+    for i, feature in progress(enumerate(features), total=len(features)):
+        # 使用批处理计算条件熵
         H_D_A = 0
+        processed = 0
+        feature_values = X_values[:, i]
         
+        # 首先获取唯一值以减少内存使用
+        unique_values = np.unique(feature_values)
+        
+        # 为每个唯一值计算条件熵
         for val in unique_values:
-            mask = feature_values == val
-            subset = y[mask] if isinstance(y, pd.Series) else y[mask]
-            weight = np.sum(mask) / len(y)
-            H_D_A += weight * entropy(subset)
+            # 使用批处理处理大数据集
+            val_count = 0
+            val_entropy = 0
+            val_total = 0
+            
+            for start in range(0, len(y), batch_size):
+                end = min(start + batch_size, len(y))
+                batch_mask = feature_values[start:end] == val
+                batch_count = np.sum(batch_mask)
+                
+                if batch_count > 0:
+                    batch_y = y[start:end][batch_mask]
+                    val_count += batch_count
+                    if len(batch_y) > 0:
+                        val_entropy += entropy(batch_y) * batch_count
+                
+                val_total += end - start
+            
+            if val_count > 0:
+                weight = val_count / len(y)
+                H_D_A += (val_entropy / val_count) * weight
         
         # 3. 计算信息增益g(D,A) = H(D) - H(D|A)
         ig = H_D - H_D_A
         scores.append(ig)
+        
+        # 定期清理内存
+        if i % 10 == 0:
+            import gc
+            gc.collect()
     
     return np.array(scores)
 

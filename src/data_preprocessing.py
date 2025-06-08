@@ -36,23 +36,46 @@ columns = [
     'dst_host_rerror_rate', 'dst_host_srv_rerror_rate', 'label'
 ]
 
-def load_and_filter_data(data_path):
-    """加载原始数据并进行初步过滤"""
-    print("正在加载原始数据...")
+def load_and_filter_data(data_path, chunksize=100000):
+    """加载原始数据并进行初步过滤，使用分块处理以处理大型数据集"""
+    print("正在加载并过滤原始数据...")
     
-    # 检查文件是否有.gz后缀
-    if data_path.endswith('.gz'):
-        data = pd.read_csv(data_path, names=columns, compression='gzip')
-    else:
-        data = pd.read_csv(data_path, names=columns)
+    filtered_chunks = []
+    total_rows = 0
+    filtered_rows = 0
     
-    # 过滤协议类型为tcp或udp的数据（论文提到处理IP和TCP流量）
-    data = data[data['protocol_type'].isin(['tcp', 'udp'])]
+    # 使用tqdm显示进度
+    try:
+        from tqdm import tqdm
+        progress = tqdm
+    except ImportError:
+        progress = lambda x: x
     
-    # 过滤无效字节数（确保src_bytes和dst_bytes为正）
-    data = data[(data['src_bytes'] > 0) & (data['dst_bytes'] > 0)]
+    # 分块读取数据
+    chunks = pd.read_csv(data_path, names=columns, 
+                        compression='gzip' if data_path.endswith('.gz') else None,
+                        chunksize=chunksize)
     
-    print(f"原始数据行数: {len(data):,} -> 过滤后行数: {len(data):,}")
+    for chunk in progress(chunks):
+        total_rows += len(chunk)
+        
+        # 过滤协议类型为tcp或udp的数据
+        chunk = chunk[chunk['protocol_type'].isin(['tcp', 'udp'])]
+        
+        # 过滤无效字节数
+        chunk = chunk[(chunk['src_bytes'] > 0) & (chunk['dst_bytes'] > 0)]
+        
+        filtered_rows += len(chunk)
+        if len(chunk) > 0:
+            filtered_chunks.append(chunk)
+        
+        # 定期清理内存
+        if len(filtered_chunks) > 10:
+            filtered_chunks = [pd.concat(filtered_chunks, ignore_index=True)]
+    
+    # 合并所有过滤后的数据
+    data = pd.concat(filtered_chunks, ignore_index=True)
+    print(f"原始数据行数: {total_rows:,} -> 过滤后行数: {filtered_rows:,}")
     return data
 
 def preprocess_data(data):
@@ -106,19 +129,19 @@ def process_labels(data):
     # 按照论文中的分类：正常、DoS、Probe、R2L、U2R
     attack_mapping = {
         'normal.': 'normal',
-        # DoS攻击
+        # DoS攻击（11种）
         'back.': 'DoS', 'land.': 'DoS', 'neptune.': 'DoS', 'pod.': 'DoS', 
         'smurf.': 'DoS', 'teardrop.': 'DoS', 'apache2.': 'DoS', 'udpstorm.': 'DoS',
-        'processtable.': 'DoS', 'worm.': 'DoS',
-        # Probe攻击
+        'processtable.': 'DoS', 'worm.': 'DoS', 'mailbomb.': 'DoS',
+        # Probe攻击（6种）
         'satan.': 'Probe', 'ipsweep.': 'Probe', 'nmap.': 'Probe', 'portsweep.': 'Probe',
         'mscan.': 'Probe', 'saint.': 'Probe',
-        # R2L攻击
+        # R2L攻击（14种）
         'ftp_write.': 'R2L', 'guess_passwd.': 'R2L', 'imap.': 'R2L', 'multihop.': 'R2L',
         'phf.': 'R2L', 'spy.': 'R2L', 'warezclient.': 'R2L', 'warezmaster.': 'R2L',
         'xlock.': 'R2L', 'xsnoop.': 'R2L', 'snmpguess.': 'R2L', 'snmpgetattack.': 'R2L',
-        'httptunnel.': 'R2L', 'sendmail.': 'R2L', 'named.': 'R2L',
-        # U2R攻击
+        'httptunnel.': 'R2L', 'sendmail.': 'R2L',
+        # U2R攻击（7种）
         'buffer_overflow.': 'U2R', 'loadmodule.': 'U2R', 'rootkit.': 'U2R', 'perl.': 'U2R',
         'sqlattack.': 'U2R', 'xterm.': 'U2R', 'ps.': 'U2R'
     }
@@ -139,29 +162,72 @@ def process_labels(data):
     
     return y, attack_mapping
 
-if __name__ == "__main__":
-    # 1. 加载数据
-    data = load_and_filter_data(os.path.join(RAW_DATA_DIR, 'kddcup.data_10_percent'))
+def main():
+    """执行数据预处理的主函数"""
+    # 1. 加载10%数据作为训练数据
+    print("\n=== 处理训练数据（10%数据集）===")
+    train_data = load_and_filter_data(os.path.join(RAW_DATA_DIR, 'kddcup.data_10_percent'))
     
-    # 2. 数据预处理
-    processed_data, zscaler, encoder = preprocess_data(data)
+    # 2. 数据预处理（使用训练数据拟合预处理器）
+    processed_train_data, zscaler, encoder = preprocess_data(train_data)
     
-    # 3. 处理标签
-    y, attack_types = process_labels(processed_data)
-    X = processed_data.drop('label', axis=1)
+    # 3. 处理训练数据标签
+    y_train_full, attack_types = process_labels(processed_train_data)
+    X_train_full = processed_train_data.drop('label', axis=1)
     
-    # 4. 划分数据集（训练集/验证集/测试集，分层抽样）
-    print("划分数据集...")
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=0.3, stratify=y, random_state=42
+    # 4. 划分训练集和验证集
+    print("\n划分训练集和验证集...")
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_full, y_train_full, 
+        test_size=0.2,  # 使用20%作为验证集
+        stratify=y_train_full,
+        random_state=42
     )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=42
+    
+    print(f"训练集大小: {len(X_train):,}, 验证集大小: {len(X_val):,}")
+    
+    # 5. 加载完整数据集作为测试集
+    print("\n=== 处理测试数据（完整数据集）===")
+    test_data = load_and_filter_data(os.path.join(RAW_DATA_DIR, 'kddcup.data.gz'))
+    
+    # 6. 使用已拟合的预处理器处理测试数据
+    # 分离分类特征和数值特征
+    categorical_cols = ['protocol_type', 'service', 'flag']
+    numerical_cols = [col for col in test_data.columns if col not in categorical_cols + ['label']]
+    
+    # 使用已拟合的编码器和缩放器转换测试数据
+    encoded_test = encoder.transform(test_data[categorical_cols])
+    encoded_test_df = pd.DataFrame(
+        encoded_test,
+        columns=encoder.get_feature_names_out(categorical_cols)
     )
     
-    print(f"数据集大小 - 训练集: {len(X_train):,}, 验证集: {len(X_val):,}, 测试集: {len(X_test):,}")
+    zscaled_test = zscaler.transform(test_data[numerical_cols])
+    zscaled_test_df = pd.DataFrame(
+        zscaled_test,
+        columns=[f'z_{col}' for col in numerical_cols]
+    )
     
-    # 5. 保存预处理后的数据和模型
+    # 对测试集进行Min-Max缩放
+    minmax_test = test_data[numerical_cols].apply(lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0)
+    minmax_test_df = minmax_test.add_prefix('mm_')
+    
+    # 合并测试集特征
+    processed_test_data = pd.concat([
+        zscaled_test_df,
+        minmax_test_df,
+        encoded_test_df,
+        test_data['label']
+    ], axis=1)
+    
+    # 处理测试集标签
+    y_test, _ = process_labels(processed_test_data)
+    X_test = processed_test_data.drop('label', axis=1)
+    
+    print(f"测试集大小: {len(X_test):,}")
+    
+    # 7. 保存所有处理后的数据和模型
+    print("\n保存处理后的数据...")
     X_train.to_csv(os.path.join(PROCESSED_DATA_DIR, 'X_train.csv'), index=False)
     y_train.to_csv(os.path.join(PROCESSED_DATA_DIR, 'y_train.csv'), index=False, header=['attack'])
     X_val.to_csv(os.path.join(PROCESSED_DATA_DIR, 'X_val.csv'), index=False)
@@ -176,4 +242,7 @@ if __name__ == "__main__":
     with open(os.path.join(PROCESSED_DATA_DIR, 'attack_mapping.json'), 'w') as f:
         json.dump(attack_types, f)
     
-    print("预处理完成！数据已保存到data/processed目录")
+    print("\n预处理完成！所有数据已保存到data/processed目录")
+
+if __name__ == "__main__":
+    main()
